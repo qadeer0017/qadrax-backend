@@ -6,14 +6,23 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
+// Global variable taake pichli price yaad rahe aur jump na lagay
+let currentSmoothPrice = 4560.50;
+
 app.get('/api/market/analysis', (req, res) => {
-    // Base price 4560 set ki hai aur isme har refresh par -5 se +5 ka random badlao aayega
-    const basePrice = 4560.00;
-    const randomFluctuation = (Math.random() * 10) - 5; // -5 se +5 tak random point change
-    const currentPrice = parseFloat((basePrice + randomFluctuation).toFixed(2));
+    // 0.10 se 0.50 cents (pips) ka smooth badlao (sirf thoda sa upar ya neeche)
+    const change = (Math.random() * 0.40) - 0.20; 
     
+    // Nayi price purani price ke upar hi calculate hogi
+    currentSmoothPrice = parseFloat((currentSmoothPrice + change).toFixed(2));
+    
+    // Agar price bohot door nikal jaye to use wapis range mein lane ke liye
+    if (currentSmoothPrice < 4545.00 || currentSmoothPrice > 4580.00) {
+        currentSmoothPrice = 4560.50;
+    }
+
     const analysisData = {
-        currentPrice: currentPrice,
+        currentPrice: currentSmoothPrice,
         probability: 85,
         tradeSignal: "BUY",
         atr: 25.40,
@@ -66,7 +75,7 @@ app.get('/api/market/calendar', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Qadrax Backend Engine is running with live fluctuating prices!');
+    res.send('Qadrax Backend Engine is running with live smooth tick fluctuations!');
 });
 
 app.listen(PORT, () => {
