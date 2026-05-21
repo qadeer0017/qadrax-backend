@@ -9,43 +9,43 @@ app.use(express.json());
 
 function fetchYahooPrice() {
   return new Promise((resolve, reject) => {
-    const url = 'https://query1.finance.yahoo.com/v8/finance/chart/GC=F?interval=1d&range=5d';
-    const options = { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36', 'Accept': 'application/json' } };
+    const url = 'https://query1.finance.yahoo.com/v7/finance/quote?symbols=GC%3DF&fields=regularMarketPrice,regularMarketDayHigh,regularMarketDayLow,regularMarketChange,chartPreviousClose';
+    const options = {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'application/json'
+      }
+    };
     https.get(url, options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
         try {
           const json = JSON.parse(data);
-          const result = json.chart.result[0];
-          const meta = result.meta;
-          const quotes = result.indicators.quote[0];
-          const closes = quotes.close.filter(v => v != null);
-          const highs = quotes.high.filter(v => v != null);
-          const lows = quotes.low.filter(v => v != null);
-          resolve({ currentPrice: meta.regularMarketPrice || closes[closes.length-1], dailyHigh: meta.regularMarketDayHigh || highs[highs.length-1], dailyLow: meta.regularMarketDayLow || lows[lows.length-1], prevClose: meta.chartPreviousClose || closes[closes.length-2] || closes[closes.length-1], closes, highs, lows });
-        } catch(e) { reject(e); }
+          const q = json.quoteResponse.result[0];
+          const cp = q.regularMarketPrice;
+          const dh = q.regularMarketDayHigh;
+          const dl = q.regularMarketDayLow;
+          const pc = q.chartPreviousClose || (cp - (q.regularMarketChange || 0));
+          resolve({ currentPrice: cp, dailyHigh: dh, dailyLow: dl, prevClose: pc, closes: [pc, cp], highs: [dh], lows: [dl] });
+        } catch (e) { reject(e); }
       });
     }).on('error', reject);
   });
 }
 
-function calcATR(highs, lows, closes, period=14) {
-  if (highs.length < 2) return 10;
+function calcATR(highs, lows, closes) {
+  if (highs.length < 2) return Math.abs(highs[0] - lows[0]) || 10;
   const trs = [];
   for (let i = 1; i < highs.length; i++) {
-    trs.push(Math.max(highs[i]-lows[i], Math.abs(highs[i]-closes[i-1]), Math.abs(lows[i]-closes[i-1])));
+    trs.push(Math.max(highs[i] - lows[i], Math.abs(highs[i] - closes[i-1]), Math.abs(lows[i] - closes[i-1])));
   }
-  const slice = trs.slice(-period);
-  return parseFloat((slice.reduce((a,b)=>a+b,0)/slice.length).toFixed(2));
+  return parseFloat((trs.reduce((a, b) => a + b, 0) / trs.length).toFixed(2));
 }
 
 function getStructure(closes) {
-  if (closes.length < 3) return 'NEUTRAL';
-  const [a, b, c] = closes.slice(-3);
-  if (c > b && b > a) return 'BULLISH';
-  if (c < b && b < a) return 'BEARISH';
-  return 'NEUTRAL';
+  if (closes.length < 2) return 'NEUTRAL';
+  return closes[closes.length-1] > closes[0] ? 'BULLISH' : closes[closes.length-1] < closes[0] ? 'BEARISH' : 'NEUTRAL';
 }
 
 function getKillZones() {
@@ -65,7 +65,7 @@ function getKillZones() {
 
 let cachedData = null;
 let cacheTime = 0;
-const CACHE_MS = 15 * 60 * 1000;
+const CACHE_MS = 60 * 1000;
 
 app.get('/api/market/analysis', async (req, res) => {
   try {
@@ -73,33 +73,37 @@ app.get('/api/market/analysis', async (req, res) => {
     if (!cachedData || now - cacheTime > CACHE_MS) {
       const { currentPrice, dailyHigh, dailyLow, prevClose, closes, highs, lows } = await fetchYahooPrice();
       const atr = calcATR(highs, lows, closes);
-      const h1Structure = getStructure(closes.slice(-3));
-      const h4Structure = getStructure(closes.slice(-5));
-      const bullish = h1Structure==='BULLISH' && h4Structure==='BULLISH';
-      const bearish = h1Structure==='BEARISH' && h4Structure==='BEARISH';
-      const equilibrium = parseFloat(((dailyHigh+dailyLow)/2).toFixed(2));
+      const h1Structure = getStructure(closes);
+      const h4Structure = getStructure(closes);
+      const bullish = h1Structure === 'BULLISH' && h4Structure === 'BULLISH';
+      const bearish = h1Structure === 'BEARISH' && h4Structure === 'BEARISH';
+      const equilibrium = parseFloat(((dailyHigh + dailyLow) / 2).toFixed(2));
+      const fvgHigh = parseFloat((currentPrice - atr * 0.1).toFixed(2));
+      const fvgLow = parseFloat((currentPrice - atr * 0.3).toFixed(2));
+      const obHigh = parseFloat((currentPrice - atr * 0.5).toFixed(2));
+      const obLow = parseFloat((currentPrice - atr * 0.8).toFixed(2));
       cachedData = {
         timestamp: new Date().toISOString(), symbol: 'GC=F', currentPrice,
-        probability: bullish||bearish ? Math.round(65+Math.random()*20) : Math.round(40+Math.random()*15),
-        tradeSignal: bullish?'BUY':bearish?'SELL':'WAIT',
+        probability: bullish || bearish ? Math.round(65 + Math.random()*20) : Math.round(40 + Math.random()*15),
+        tradeSignal: bullish ? 'BUY' : bearish ? 'SELL' : 'WAIT',
         atr, h1Structure, h4Structure,
-        mtfAlignment: bullish?'ALIGNED BULLISH':bearish?'ALIGNED BEARISH':'MIXED',
-        bos: currentPrice>prevClose?'BULLISH BOS':'BEARISH BOS',
-        confirmation: bullish?'BULLISH CONFIRMATION':bearish?'BEARISH CONFIRMATION':'WAIT FOR CONFIRMATION',
-        dailyHigh, dailyLow, dailyRange: parseFloat((dailyHigh-dailyLow).toFixed(2)),
+        mtfAlignment: bullish ? 'ALIGNED BULLISH' : bearish ? 'ALIGNED BEARISH' : 'MIXED',
+        bos: currentPrice > prevClose ? 'BULLISH BOS' : 'BEARISH BOS',
+        confirmation: bullish ? 'BULLISH CONFIRMATION' : bearish ? 'BEARISH CONFIRMATION' : 'WAIT FOR CONFIRMATION',
+        dailyHigh, dailyLow, dailyRange: parseFloat((dailyHigh - dailyLow).toFixed(2)),
         equilibrium, premiumZoneHigh: dailyHigh, premiumZoneLow: equilibrium,
         discountZoneHigh: equilibrium, discountZoneLow: dailyLow,
-        sessionHigh: parseFloat((currentPrice+atr*0.5).toFixed(2)),
-        sessionLow: parseFloat((currentPrice-atr*0.5).toFixed(2)),
-        externalSellLiquidity: [parseFloat((dailyLow-atr).toFixed(2))],
-        externalBuyLiquidity: [parseFloat((dailyHigh+atr).toFixed(2))],
-        internalSellLiquidity: [parseFloat((equilibrium+atr*0.3).toFixed(2))],
-        internalBuyLiquidity: [parseFloat((equilibrium-atr*0.3).toFixed(2))],
-        fairValueGaps: [{ type: bullish?'bullish':'bearish', age:1, high: parseFloat((currentPrice-atr*0.1).toFixed(2)), low: parseFloat((currentPrice-atr*0.3).toFixed(2)), midpoint: parseFloat((currentPrice-atr*0.2).toFixed(2)) }],
-        orderBlocks: [{ type: bullish?'bullish':'bearish', tested:false, high: parseFloat((currentPrice-atr*0.5).toFixed(2)), low: parseFloat((currentPrice-atr*0.8).toFixed(2)), strength:3 }],
+        sessionHigh: parseFloat((currentPrice + atr*0.5).toFixed(2)),
+        sessionLow: parseFloat((currentPrice - atr*0.5).toFixed(2)),
+        externalSellLiquidity: [parseFloat((dailyLow - atr).toFixed(2))],
+        externalBuyLiquidity: [parseFloat((dailyHigh + atr).toFixed(2))],
+        internalSellLiquidity: [parseFloat((equilibrium + atr*0.3).toFixed(2))],
+        internalBuyLiquidity: [parseFloat((equilibrium - atr*0.3).toFixed(2))],
+        fairValueGaps: [{ type: bullish?'bullish':'bearish', age:1, high: fvgHigh, low: fvgLow, midpoint: parseFloat(((fvgHigh+fvgLow)/2).toFixed(2)) }],
+        orderBlocks: [{ type: bullish?'bullish':'bearish', tested:false, high: obHigh, low: obLow, strength:3 }],
         supplyZones: [{ low: parseFloat((dailyHigh-atr*0.2).toFixed(2)), high: dailyHigh, strength:2 }],
         demandZones: [{ low: dailyLow, high: parseFloat((dailyLow+atr*0.2).toFixed(2)), strength:3 }],
-        activeSweeps: currentPrice>prevClose?['BUY SIDE SWEEP']:['SELL SIDE SWEEP'],
+        activeSweeps: currentPrice > prevClose ? ['BUY SIDE SWEEP'] : ['SELL SIDE SWEEP'],
         killZones: getKillZones()
       };
       cacheTime = now;
@@ -108,7 +112,7 @@ app.get('/api/market/analysis', async (req, res) => {
       cachedData.timestamp = new Date().toISOString();
     }
     res.json(cachedData);
-  } catch(err) {
+  } catch (err) {
     res.status(500).json({ error: 'Failed to fetch market data', details: err.message });
   }
 });
@@ -119,10 +123,10 @@ app.get('/api/market/calendar', (req, res) => {
     { title:'US CPI m/m', country:'USD', date: new Date(Date.now()+3*86400000).toISOString(), impact:'High', forecast:'0.3%', previous:'0.2%', actual:'' },
     { title:'US NFP', country:'USD', date: new Date(Date.now()+5*86400000).toISOString(), impact:'High', forecast:'180K', previous:'175K', actual:'' },
     { title:'PPI m/m', country:'USD', date: new Date(Date.now()+4*86400000).toISOString(), impact:'Medium', forecast:'0.2%', previous:'0.3%', actual:'' },
+    { title:'Core Retail Sales m/m', country:'USD', date: new Date(Date.now()+7*86400000).toISOString(), impact:'Medium', forecast:'0.2%', previous:'0.1%', actual:'' },
   ]);
 });
 
 app.get('/api/healthz', (req, res) => res.json({ status: 'ok' }));
-app.get('/', (req, res) => res.send('QADRAX Backend — Live Yahoo Finance Data'));
-
+app.get('/', (req, res) => res.send('QADRAX Backend — Live Yahoo Finance (1min updates)'));
 app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
