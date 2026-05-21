@@ -7,8 +7,10 @@ app.use(cors());
 app.use(express.json());
 
 app.get('/api/market/analysis', (req, res) => {
-    // Aapki demand ke mutabiq Gold Futures Price ko 4500 se upar set kar diya hai
-    const currentPrice = 4564.50; 
+    // Base price 4560 set ki hai aur isme har refresh par -5 se +5 ka random badlao aayega
+    const basePrice = 4560.00;
+    const randomFluctuation = (Math.random() * 10) - 5; // -5 se +5 tak random point change
+    const currentPrice = parseFloat((basePrice + randomFluctuation).toFixed(2));
     
     const analysisData = {
         currentPrice: currentPrice,
@@ -64,7 +66,7 @@ app.get('/api/market/calendar', (req, res) => {
 });
 
 app.get('/', (req, res) => {
-    res.send('Qadrax Backend Engine is running live with Futures Pricing!');
+    res.send('Qadrax Backend Engine is running with live fluctuating prices!');
 });
 
 app.listen(PORT, () => {
